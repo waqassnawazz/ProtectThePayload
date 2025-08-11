@@ -10,9 +10,9 @@
 # • Budget enforced; max TWO new purchases per round.
 # • Decision time recorded; tiebreakers: Payload ↓, Budget ↓, Time ↑.
 # • Defaults: 5 rounds, Starting Payload = 20, Starting Budget = 250.
-# • Instructor view is locked behind a global PIN (1557) before it’s visible.
-# • NEW: One-shot auto-refresh for Team Consoles and Leaderboard on round open/close.
-# • NEW: Gentle 1.5s heartbeat so clients notice events promptly; form state is preserved.
+# • PIN-gated Instructor view (1557).
+# • One-shot auto-refresh (open/close events) + gentle heartbeat (1.5s).
+# • View selection and team inputs persist across reruns (no bouncing back).
 
 from __future__ import annotations
 import streamlit as st
@@ -22,45 +22,34 @@ import time, random, string
 import threading
 import copy
 
-# --- Optional autorefresh helper (works if available; else fallback to meta refresh)
+# --- Optional autorefresh helper
 try:
     from streamlit import st_autorefresh
-except Exception:  # older/newer Streamlit without st_autorefresh
+except Exception:
     st_autorefresh = None
 
 # ---------- Security ----------
-INSTRUCTOR_PIN = "1557"  # gate to even SEE the Instructor UI
+INSTRUCTOR_PIN = "1557"
 
 # ---------- Constants ----------
 COMPONENTS = [
     ("Light Shield", 10, {"Rocky Terrain"}),
-    ("Heavy Shield", 30, {"Rocky Terrain", "Heat Wave"}),  # "OR"
+    ("Heavy Shield", 30, {"Rocky Terrain", "Heat Wave"}),
     ("Parachute", 20, {"Turbulence"}),
     ("Guidance System", 20, set()),      # dodge one hazard by name
     ("Reinforced Frame", 20, {"High Wind"}),
     ("Foam Liner", 10, set()),           # -1 total loss if there was any loss
 ]
-
-HAZARDS = {
-    "High Wind": 3,
-    "Rocky Terrain": 3,
-    "Heat Wave": 2,
-    "Turbulence": 2,
-}
-
-DEFAULT_CONFIG = {
-    "rounds": 5,
-    "starting_budget": 250,
-    "starting_payload": 20,
-}
-
+HAZARDS = {"High Wind": 3, "Rocky Terrain": 3, "Heat Wave": 2, "Turbulence": 2}
+DEFAULT_CONFIG = {"rounds": 5, "starting_budget": 250, "starting_payload": 20}
 COMP_KEYS = [c[0] for c in COMPONENTS]
 COSTS = {name: cost for name, cost, _ in COMPONENTS}
+VIEWS = ["Instructor", "Team Console", "Leaderboard"]
 
 # ---------- Shared store ----------
 @st.cache_resource(show_spinner=False)
 def get_store():
-    # "events" is a per-game counter bumped on open/close so clients can do a one-shot refresh.
+    # events: per-game counter bumped on open/close so clients do a one-shot refresh.
     return {"games": {}, "lock": threading.Lock(), "events": {}}
 
 # ---------- Data Models ----------
@@ -99,32 +88,20 @@ class GameState:
             self.round_open.setdefault(r, False)
             self.round_open_ts.setdefault(r, None)
 
-# ---------- Utilities ----------
+# ---------- Utils ----------
 def random_code(n=6) -> str:
     alphabet = string.ascii_uppercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(n))
 
 def latest_closed_round(gs: GameState) -> Optional[int]:
-    """Highest round index that has been opened and is currently closed."""
     for r in range(gs.max_round(), 0, -1):
         if gs.round_open_ts.get(r) is not None and not gs.round_open.get(r, False):
             return r
     return None
 
-def inventory_after_round(gs: GameState, team: TeamState, upto_round: int) -> Dict[str, int]:
-    if upto_round <= 0:
-        return {k: 0 for k in COMP_KEYS}
-    prog = compute_team_progress(gs, team)
-    inv = prog.get(upto_round, {}).get("InventoryAfter")
-    if isinstance(inv, dict):
-        return {k: int(inv.get(k, 0)) for k in COMP_KEYS}
-    return {k: 0 for k in COMP_KEYS}
-
-# ---------- Core Computation ----------
 def compute_team_progress(gs: GameState, team: TeamState) -> Dict[int, Dict[str, float]]:
     rmax = gs.max_round()
     out: Dict[int, Dict[str, float]] = {}
-
     prev_payload = float(gs.config.get("starting_payload", 20))
     prev_budget  = float(gs.config.get("starting_budget", 150))
     total_spent  = 0.0
@@ -133,7 +110,6 @@ def compute_team_progress(gs: GameState, team: TeamState) -> Dict[int, Dict[str,
     for r in range(1, rmax + 1):
         dec = team.decisions.get(r)
         haz1, haz2 = gs.hazards.get(r, (None, None))
-
         round_spend = 0.0
         budget_after = prev_budget
         loss1 = loss2 = 0.0
@@ -148,7 +124,6 @@ def compute_team_progress(gs: GameState, team: TeamState) -> Dict[int, Dict[str,
             round_spend = sum(COSTS[k] for k in purchases)
             budget_after = max(0.0, prev_budget - round_spend)
             total_spent_after = total_spent + round_spend
-
             current_inv = {k: 1 if (inventory.get(k, 0) == 1 or k in purchases) else 0 for k in COMP_KEYS}
             used = {k: 0 for k in COMP_KEYS}
 
@@ -156,16 +131,13 @@ def compute_team_progress(gs: GameState, team: TeamState) -> Dict[int, Dict[str,
                 if not hname:
                     return 0.0
                 base = HAZARDS[hname]
-                # Guidance: single use if exact name matches
                 if (
                     current_inv.get("Guidance System", 0) == 1
-                    and dec.dodged_hazard
-                    and dec.dodged_hazard.strip() == hname
+                    and dec.dodged_hazard and dec.dodged_hazard.strip() == hname
                     and used["Guidance System"] == 0
                 ):
                     used["Guidance System"] = 1
                     return 0.0
-                # Protections (consumed if used)
                 if hname == "Rocky Terrain":
                     if current_inv.get("Light Shield", 0) == 1 and used["Light Shield"] == 0:
                         used["Light Shield"] = 1; return 0.0
@@ -185,32 +157,21 @@ def compute_team_progress(gs: GameState, team: TeamState) -> Dict[int, Dict[str,
             loss1 = apply_hazard(haz1)
             loss2 = apply_hazard(haz2)
             total_loss_prefoam = loss1 + loss2
-
             if current_inv.get("Foam Liner", 0) == 1 and total_loss_prefoam > 0 and used["Foam Liner"] == 0:
-                foam_red = 1.0
-                used["Foam Liner"] = 1
-
+                foam_red = 1.0; used["Foam Liner"] = 1
             total_loss = max(0.0, total_loss_prefoam - foam_red)
             payload_after = max(0.0, prev_payload - total_loss)
-
             inventory_after = {k: (1 if current_inv.get(k, 0) == 1 and used[k] == 0 else 0) for k in COMP_KEYS}
             total_spent = total_spent_after
 
         out[r] = {
-            "PrevPayload": prev_payload,
-            "PayloadAfter": payload_after,
-            "PrevBudget": prev_budget,
-            "BudgetAfter": budget_after,
-            "PrevCost": total_spent,
-            "CurrentCost": total_spent + round_spend,
-            "RoundSpend": round_spend,
-            "Loss1": loss1,
-            "Loss2": loss2,
-            "FoamReduction": foam_red,
-            "TotalLoss": total_loss,
+            "PrevPayload": prev_payload, "PayloadAfter": payload_after,
+            "PrevBudget": prev_budget,   "BudgetAfter": budget_after,
+            "PrevCost": total_spent,     "CurrentCost": total_spent + round_spend,
+            "RoundSpend": round_spend,   "Loss1": loss1, "Loss2": loss2,
+            "FoamReduction": foam_red,   "TotalLoss": total_loss,
             "InventoryAfter": inventory_after,
         }
-
         prev_payload = payload_after
         prev_budget  = budget_after
         inventory    = inventory_after
@@ -227,7 +188,15 @@ def prev_budget_and_inventory(gs: GameState, team: TeamState, round_index: int) 
     inv    = prev.get("InventoryAfter", {k:0 for k in COMP_KEYS})
     return budget, {k:int(inv.get(k,0)) for k in COMP_KEYS}
 
-# ---------- Guides ----------
+def inventory_after_round(gs: GameState, team: TeamState, upto_round: int) -> Dict[str, int]:
+    if upto_round <= 0:
+        return {k: 0 for k in COMP_KEYS}
+    prog = compute_team_progress(gs, team)
+    inv = prog.get(upto_round, {}).get("InventoryAfter")
+    if isinstance(inv, dict):
+        return {k: int(inv.get(k, 0)) for k in COMP_KEYS}
+    return {k: 0 for k in COMP_KEYS}
+
 def render_guides():
     st.caption("Component guide (cost → protection)")
     st.markdown("\n".join([
@@ -245,54 +214,49 @@ def render_guides():
 st.set_page_config(page_title="Protect the Payload – Strategy Game", page_icon="🛡️", layout="wide")
 store = get_store()
 
+# Persisted view mode to avoid bouncing on reruns
+if "app_view" not in st.session_state:
+    st.session_state["app_view"] = "Instructor"  # default only once
+mode = st.sidebar.selectbox("Choose view", VIEWS, key="app_view")
+
 st.title("🛡️ Protect the Payload – Strategy Game")
 st.caption("Strategy competition for COMM401 Section 5. (c) Waqas Nawaz")
 
-# Role picker (everyone uses same app; role controls view)
-mode = st.sidebar.selectbox("Choose view", ["Instructor", "Team Console", "Leaderboard"])
-
-# ---------- INSTRUCTOR VIEW (PIN-GATED) ----------
+# ---------- INSTRUCTOR VIEW ----------
 if mode == "Instructor":
-    # Gate: ask for PIN 1557 before showing instructor UI
     if "instructor_auth" not in st.session_state:
         st.session_state["instructor_auth"] = False
 
     if not st.session_state["instructor_auth"]:
         st.subheader("Instructor Login")
-        pin_try = st.text_input("Enter Instructor PIN", type="password")
-        col_a, col_b = st.columns([1,3])
+        pin_try = st.text_input("Enter Instructor PIN", type="password", key="instructor_pin_input")
+        col_a, _ = st.columns([1,3])
         with col_a:
             if st.button("Unlock"):
                 if pin_try == INSTRUCTOR_PIN:
                     st.session_state["instructor_auth"] = True
-                    st.success("Instructor view unlocked.")
-                    st.rerun()
+                    st.success("Instructor view unlocked."); st.rerun()
                 else:
                     st.error("Incorrect PIN.")
         st.info("If you're a student, use Team Console or Leaderboard in the sidebar.")
         st.stop()
     else:
-        # Optional: quick relock
         if st.sidebar.button("🔒 Lock Instructor View"):
-            st.session_state["instructor_auth"] = False
-            st.rerun()
+            st.session_state["instructor_auth"] = False; st.rerun()
 
     st.subheader("Instructor – Host a Game")
-
     c1, c2 = st.columns([1,1])
     with c1:
         if st.button("Create New Game", type="primary"):
             with store["lock"]:
-                gid = random_code(6)
-                pin = random_code(4)
-                gs = GameState(game_id=gid, admin_pin=pin)
-                gs.ensure_rounds()
+                gid = random_code(6); pin = random_code(4)
+                gs = GameState(game_id=gid, admin_pin=pin); gs.ensure_rounds()
                 store["games"][gid] = gs
             st.success(f"Game created: Code **{gid}** | Admin PIN **{pin}**")
             st.session_state["current_game"] = gid
 
-        gid_input = st.text_input("Game Code", value=st.session_state.get("current_game", ""))
-        pin_input = st.text_input("Admin PIN", type="password")
+        gid_input = st.text_input("Game Code", value=st.session_state.get("current_game", ""), key="instr_gid_input")
+        pin_input = st.text_input("Admin PIN", type="password", key="instr_pin_input")
         if st.button("Load Game"):
             gs = store["games"].get(gid_input)
             if gs and gs.admin_pin == pin_input:
@@ -307,11 +271,11 @@ if mode == "Instructor":
         st.markdown(f"### Game **{gid}**")
         cc1, cc2, cc3, cc4 = st.columns([1,1,1,1])
         with cc1:
-            rounds = st.number_input("Rounds", 1, 10, value=gs.config.get("rounds", 5))
+            rounds = st.number_input("Rounds", 1, 10, value=gs.config.get("rounds", 5), key="rounds_input")
         with cc2:
-            sb = st.number_input("Starting Budget", 0, 1000, value=gs.config.get("starting_budget", 150))
+            sb = st.number_input("Starting Budget", 0, 1000, value=gs.config.get("starting_budget", 150), key="sb_input")
         with cc3:
-            sp = st.number_input("Starting Payload", 0, 100, value=gs.config.get("starting_payload", 20))
+            sp = st.number_input("Starting Payload", 0, 100, value=gs.config.get("starting_payload", 20), key="sp_input")
         with cc4:
             if st.button("Save Settings"):
                 with store["lock"]:
@@ -328,10 +292,10 @@ if mode == "Instructor":
             h1_default, h2_default = gs.hazards.get(r, (None, None))
             with haz_col[0]:
                 h1 = st.selectbox(f"Round {r} – Hazard 1", [None] + hazard_names,
-                                  index=(hazard_names.index(h1_default)+1) if h1_default in hazard_names else 0, key=f"h1_{r}")
+                    index=(hazard_names.index(h1_default)+1) if h1_default in hazard_names else 0, key=f"h1_{r}")
             with haz_col[1]:
                 h2 = st.selectbox(f"Round {r} – Hazard 2", [None] + hazard_names,
-                                  index=(hazard_names.index(h2_default)+1) if h2_default in hazard_names else 0, key=f"h2_{r}")
+                    index=(hazard_names.index(h2_default)+1) if h2_default in hazard_names else 0, key=f"h2_{r}")
             with haz_col[2]:
                 open_flag = st.toggle("Open", value=gs.round_open.get(r, False), key=f"open_{r}")
             with haz_col[3]:
@@ -340,14 +304,11 @@ if mode == "Instructor":
                         prev_open = gs.round_open.get(r, False)
                         gs.hazards[r] = (h1, h2)
                         gs.round_open[r] = open_flag
-
-                        # Track transitions to OPEN/CLOSE and bump the game event counter.
                         if open_flag and not prev_open:
                             gs.round_open_ts[r] = time.time()
-                            store["events"][gid] = store["events"].get(gid, 0) + 1  # OPEN → trigger one-shot
+                            store["events"][gid] = store["events"].get(gid, 0) + 1  # OPEN event
                         elif (not open_flag) and prev_open:
-                            store["events"][gid] = store["events"].get(gid, 0) + 1  # CLOSE → trigger one-shot
-
+                            store["events"][gid] = store["events"].get(gid, 0) + 1  # CLOSE event
                     st.toast(f"Round {r} saved.")
             with haz_col[4]:
                 total = len(gs.teams)
@@ -360,8 +321,7 @@ if mode == "Instructor":
         st.divider()
         st.markdown("#### Teams")
         if gs.teams:
-            for tname, _ in gs.teams.items():
-                st.write(f"• {tname}")
+            for tname, _ in gs.teams.items(): st.write(f"• {tname}")
         else:
             st.info("No teams yet. Ask students to join via Team Console with game code.")
 
@@ -378,8 +338,14 @@ if mode == "Instructor":
 # ---------- TEAM CONSOLE ----------
 elif mode == "Team Console":
     st.subheader("Team Console")
-    gid = st.text_input("Game Code")
-    tname = st.text_input("Team Name")
+
+    # Persisted inputs so reruns don't clear them
+    if "team_game" not in st.session_state: st.session_state["team_game"] = ""
+    if "team_name" not in st.session_state: st.session_state["team_name"] = ""
+
+    gid = st.text_input("Game Code", key="team_gid_input", value=st.session_state["team_game"])
+    tname = st.text_input("Team Name", key="team_name_input", value=st.session_state["team_name"])
+
     if st.button("Join / Load Team", type="primary"):
         if gid not in store["games"]:
             st.error("Game not found. Check the code with your instructor.")
@@ -401,13 +367,13 @@ elif mode == "Team Console":
         gs: GameState = store["games"][gid_ss]
         team: TeamState = gs.teams[tname_ss]
 
-        # --- Gentle heartbeat so the console notices instructor Open/Close events ---
+        # Gentle heartbeat to notice events fast (won't lose form state)
         if st_autorefresh:
             st_autorefresh(interval=1500, key=f"hb_team_{gid_ss}_{tname_ss}")
         else:
             st.markdown("<meta http-equiv='refresh' content='1.5'/>", unsafe_allow_html=True)
 
-        # --- One-shot auto-refresh when instructor opens/closes a round (event bump) ---
+        # One-shot auto-refresh when instructor opens/closes a round
         last_seen_key = f"last_event_{gid_ss}"
         current_event = store.get("events", {}).get(gid_ss, 0)
         if last_seen_key not in st.session_state:
@@ -426,7 +392,6 @@ elif mode == "Team Console":
         # Header metrics: hide results while any round is OPEN (show pre-round totals).
         rmax = gs.max_round()
         open_rounds = [r for r in range(1, rmax+1) if gs.round_open.get(r, False)]
-
         if open_rounds:
             r0 = min(open_rounds)
             pv = progress.get(r0, {}).get("PrevPayload", gs.config["starting_payload"])
@@ -437,9 +402,9 @@ elif mode == "Team Console":
             display_payload = int(progress.get(last, {}).get("PayloadAfter", gs.config["starting_payload"]))
             display_budget  = int(progress.get(last, {}).get("BudgetAfter", gs.config["starting_budget"]))
 
-        sc1, sc2 = st.columns(2)
-        with sc1: st.metric("Payload (points)", value=display_payload)
-        with sc2: st.metric("Budget ($)", value=display_budget)
+        c1, c2 = st.columns(2)
+        with c1: st.metric("Payload (points)", value=display_payload)
+        with c2: st.metric("Budget ($)", value=display_budget)
 
         st.divider()
         st.markdown("#### Rounds")
@@ -447,11 +412,10 @@ elif mode == "Team Console":
             with st.expander(f"Round {r}", expanded=(r == 1)):
                 haz1, haz2 = gs.hazards.get(r, (None, None))
                 open_now = gs.round_open.get(r, False)
-
                 dec = team.decisions.get(r)
                 submitted_this_round = bool(dec and dec.submitted)
 
-                # Hazards stay hidden while OPEN (regardless of submission).
+                # Hazards hidden while OPEN
                 show_h1 = haz1 if (not open_now) else "Hidden"
                 show_h2 = haz2 if (not open_now) else "Hidden"
                 st.write(f"**Hazards:** {show_h1} & {show_h2} | **Status:** {'OPEN' if open_now else 'Closed'}")
@@ -461,10 +425,6 @@ elif mode == "Team Console":
                 comp_vals = progress.get(r, {})
                 earlier_open = any(gs.round_open.get(k, False) for k in range(1, r))
 
-                # STRICT METRICS DISPLAY:
-                # - OPEN → show only per-round numbers in decision panel (below).
-                # - CLOSED but earlier open → hide (fairness).
-                # - CLOSED and no earlier open → full metrics.
                 if not open_now:
                     if earlier_open:
                         first_open = next(k for k in range(1, r) if gs.round_open.get(k, False))
@@ -480,7 +440,7 @@ elif mode == "Team Console":
                 # Decision UI
                 if submitted_this_round:
                     if open_now:
-                        st.info("Decision submitted. Waiting for instructor to close this round; results are hidden for fairness.")
+                        st.info("Decision submitted. Waiting for instructor to close this round; results hidden for fairness.")
                     else:
                         st.success("Round submitted. Decisions are locked.")
                     if dec:
@@ -493,7 +453,6 @@ elif mode == "Team Console":
                     st.warning("Round is CLOSED. Wait for your instructor to open it.")
 
                 else:
-                    # Round is OPEN and not submitted → show ONLY per-round payload/budget inside decision panel
                     round_prev_payload = int(progress.get(r, {}).get("PrevPayload", gs.config["starting_payload"]))
                     round_prev_budget  = int(progress.get(r, {}).get("PrevBudget",  gs.config["starting_budget"]))
                     m1, m2 = st.columns(2)
@@ -503,7 +462,6 @@ elif mode == "Team Console":
                     prev_inventory = inventory_after_round(gs, team, r-1)
                     existing_flags = dec.components if dec else prev_inventory
 
-                    # Stable widget keys ensure choices persist across gentle reruns.
                     with st.form(key=f"form_{tname_ss}_{r}"):
                         st.caption("Choose your components (1 = own, 0 = not owned). Only unused components carry to next round. Max 2 new purchases.")
                         cols = st.columns(3)
@@ -511,8 +469,7 @@ elif mode == "Team Console":
                         for i, comp_name in enumerate(COMP_KEYS):
                             with cols[i % 3]:
                                 new_flags[comp_name] = st.selectbox(
-                                    comp_name,
-                                    options=[0, 1],
+                                    comp_name, options=[0, 1],
                                     index=existing_flags.get(comp_name, 0),
                                     key=f"{tname_ss}_{r}_{comp_name}"
                                 )
@@ -534,7 +491,7 @@ elif mode == "Team Console":
                                 else:
                                     spend = sum(COSTS[k] for k in newly_added)
                                     if spend > prev_budget_val + 1e-9:
-                                        st.error(f"Insufficient budget. This purchase costs ${int(spend)} but you only have ${int(prev_budget_val)} left.")
+                                        st.error(f"Insufficient budget. Costs ${int(spend)} but you have ${int(prev_budget_val)}.")
                                     else:
                                         now = time.time()
                                         opened_at = gs.round_open_ts.get(r)
@@ -543,8 +500,7 @@ elif mode == "Team Console":
                                             team.decisions[r] = TeamDecision(
                                                 components=new_flags,
                                                 dodged_hazard=dodge.strip() or None,
-                                                submitted=True,
-                                                submitted_ts=now,
+                                                submitted=True, submitted_ts=now,
                                                 decision_seconds=decision_seconds,
                                             )
                                             compute_team_progress(gs, team)
@@ -553,17 +509,18 @@ elif mode == "Team Console":
 # ---------- LEADERBOARD VIEW ----------
 else:
     st.subheader("Leaderboard / Projector")
-    gid = st.text_input("Game Code", value=st.session_state.get("current_game", ""))
+    if "current_game" not in st.session_state:
+        st.session_state["current_game"] = ""
+    gid = st.text_input("Game Code", value=st.session_state.get("current_game", ""), key="leader_gid_input")
 
     if gid and gid in store["games"]:
-
-        # Gentle heartbeat so the projector notices events quickly
+        # Gentle heartbeat
         if st_autorefresh:
             st_autorefresh(interval=1500, key=f"hb_leader_{gid}")
         else:
             st.markdown("<meta http-equiv='refresh' content='1.5'/>", unsafe_allow_html=True)
 
-        # One-shot auto-refresh when instructor opens/closes a round (event bump)
+        # One-shot on events
         last_seen_key = f"last_event_{gid}"
         current_event = store.get("events", {}).get(gid, 0)
         if last_seen_key not in st.session_state:
@@ -581,7 +538,6 @@ else:
         closed_round = latest_closed_round(gs)
         all_closed = (closed_round == gs.max_round()) if closed_round is not None else False
 
-        # Build standings using the LATEST CLOSED ROUND (no leaks while open)
         rows = []
         if closed_round is not None:
             for tname, team in gs.teams.items():
@@ -596,7 +552,6 @@ else:
                 rows.append((tname, payload, budget, total_time))
             rows.sort(key=lambda x: (-x[1], -x[2], x[3]))
 
-        # Banner
         if closed_round is None:
             st.info("Waiting for Round 1 to finish…")
         elif rows:
@@ -607,7 +562,6 @@ else:
                 st.info(f"Current leader (after Round {closed_round}): {rows[0][0]} "
                         f"(Payload {rows[0][1]}, Budget {rows[0][2]}, Time {int(rows[0][3])}s)")
 
-        # Top 3
         st.markdown("### Top 3 Teams")
         if closed_round is None:
             st.info("Waiting for Round 1 to finish…")
@@ -621,7 +575,6 @@ else:
                 "Time (s)":[int(r[3]) for r in top3],
             }, use_container_width=True)
 
-        # Full standings
         st.markdown("### Full Standings")
         if closed_round is None:
             st.info("Waiting for Round 1 to finish…")
@@ -634,7 +587,6 @@ else:
                 "Time (s)":[int(r[3]) for r in rows],
             }, use_container_width=True)
 
-        # Hazards schedule
         st.markdown("### Hazards Schedule")
         hz = {}
         for r in range(1, gs.max_round()+1):
