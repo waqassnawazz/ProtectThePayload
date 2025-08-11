@@ -1,18 +1,11 @@
 # Protect the Payload – Simple Digital Strategy Game (Streamlit)
 # -------------------------------------------------------------
-# Fairness rules implemented:
-# • Hazards/results hidden while a round is OPEN (even after a team submits).
-# • Round panels never show metrics if the round (or any earlier round) is still OPEN.
-# • Header metrics hide results while any round is OPEN (show pre-round totals instead).
-# • Leaderboard shows standings ONLY after the latest CLOSED round, and labels the round.
-# • One submission per round; form disappears immediately on submit.
-# • Components are consumable when they actually protect; unused ones carry over.
-# • Budget enforced; max TWO new purchases per round.
-# • Decision time recorded; tiebreakers: Payload ↓, Budget ↓, Time ↑.
-# • Defaults: 5 rounds, Starting Payload = 20, Starting Budget = 250.
-# • PIN-gated Instructor view (1557).
-# • One-shot auto-refresh (open/close events) + gentle heartbeat (1.5s).
-# • View selection and team inputs persist across reruns (no bouncing back).
+# Key behaviors:
+# • PIN-gated Instructor (1557). Team Console + Leaderboard for students.
+# • Fairness: hide hazards/results while any round is OPEN.
+# • One-shot event counter: when instructor opens/closes a round, clients refresh ONCE.
+# • Gentle heartbeat (1.5s) using st_autorefresh ONLY (no meta-refresh) to detect events.
+# • View + team/game are persisted in URL (?view=team&gid=ABC123&team=Eagles) to prevent bouncing back on mobile.
 
 from __future__ import annotations
 import streamlit as st
@@ -22,11 +15,11 @@ import time, random, string
 import threading
 import copy
 
-# --- Optional autorefresh helper
+# --- Auto-refresh helper (we REQUIRE this; no meta-refresh fallbacks)
 try:
     from streamlit import st_autorefresh
 except Exception:
-    st_autorefresh = None
+    st_autorefresh = None  # If unavailable, we’ll still run without heartbeats
 
 # ---------- Security ----------
 INSTRUCTOR_PIN = "1557"
@@ -44,12 +37,12 @@ HAZARDS = {"High Wind": 3, "Rocky Terrain": 3, "Heat Wave": 2, "Turbulence": 2}
 DEFAULT_CONFIG = {"rounds": 5, "starting_budget": 250, "starting_payload": 20}
 COMP_KEYS = [c[0] for c in COMPONENTS]
 COSTS = {name: cost for name, cost, _ in COMPONENTS}
-VIEWS = ["Instructor", "Team Console", "Leaderboard"]
+VIEWS = {"instructor": "Instructor", "team": "Team Console", "leader": "Leaderboard"}
 
 # ---------- Shared store ----------
 @st.cache_resource(show_spinner=False)
 def get_store():
-    # events: per-game counter bumped on open/close so clients do a one-shot refresh.
+    # events: per-game counter bumped on open/close so clients can do a one-shot refresh.
     return {"games": {}, "lock": threading.Lock(), "events": {}}
 
 # ---------- Data Models ----------
@@ -210,20 +203,55 @@ def render_guides():
     st.caption("Damage guide (hazard → payload loss)")
     st.markdown("\n".join([f"- {name} – reduces payload by {HAZARDS[name]}" for name in HAZARDS]))
 
+# ---------- URL state helpers ----------
+def _get_qparam(name: str, default: str = "") -> str:
+    return st.query_params.get(name, [default])[0] if isinstance(st.query_params.get(name, default), list) else st.query_params.get(name, default)
+
+def _set_query(view: str = None, gid: str = None, team: str = None):
+    qp = dict(st.query_params)
+    if view is not None: qp["view"] = view
+    if gid  is not None: qp["gid"]  = gid
+    if team is not None: qp["team"] = team
+    st.query_params.clear()
+    for k, v in qp.items():
+        # Ensure values are strings
+        st.query_params[k] = str(v)
+
 # ---------- App UI ----------
 st.set_page_config(page_title="Protect the Payload – Strategy Game", page_icon="🛡️", layout="wide")
 store = get_store()
 
-# Persisted view mode to avoid bouncing on reruns
+# Seed session state from URL (view/gid/team)
+url_view = _get_qparam("view", "instructor").lower()
+url_gid  = _get_qparam("gid", "")
+url_team = _get_qparam("team", "")
+
 if "app_view" not in st.session_state:
-    st.session_state["app_view"] = "Instructor"  # default only once
-mode = st.sidebar.selectbox("Choose view", VIEWS, key="app_view")
+    st.session_state["app_view"] = VIEWS.get(url_view, VIEWS["instructor"])
+if "team_game" not in st.session_state:
+    st.session_state["team_game"] = url_gid
+if "team_name" not in st.session_state:
+    st.session_state["team_name"] = url_team
+if "current_game" not in st.session_state:
+    st.session_state["current_game"] = ""
+
+# View picker (persisted). When changed, also push into URL.
+def _on_view_change():
+    chosen = st.session_state["app_view"]
+    # Map back to view key
+    inv = {v:k for k,v in VIEWS.items()}
+    _set_query(view=inv.get(chosen, "instructor"),
+               gid=st.session_state.get("team_game",""),
+               team=st.session_state.get("team_name",""))
+
+mode = st.sidebar.selectbox("Choose view", list(VIEWS.values()),
+                            key="app_view", on_change=_on_view_change)
 
 st.title("🛡️ Protect the Payload – Strategy Game")
 st.caption("Strategy competition for COMM401 Section 5. (c) Waqas Nawaz")
 
 # ---------- INSTRUCTOR VIEW ----------
-if mode == "Instructor":
+if mode == VIEWS["instructor"]:
     if "instructor_auth" not in st.session_state:
         st.session_state["instructor_auth"] = False
 
@@ -336,17 +364,22 @@ if mode == "Instructor":
         st.info("Create or load a game to configure settings & hazards.")
 
 # ---------- TEAM CONSOLE ----------
-elif mode == "Team Console":
+elif mode == VIEWS["team"]:
     st.subheader("Team Console")
 
-    # Persisted inputs so reruns don't clear them
-    if "team_game" not in st.session_state: st.session_state["team_game"] = ""
-    if "team_name" not in st.session_state: st.session_state["team_name"] = ""
+    # Persisted inputs; also mirror into URL so mobile reloads land back here
+    gid = st.text_input("Game Code", key="team_gid_input", value=st.session_state.get("team_game",""))
+    tname = st.text_input("Team Name", key="team_name_input", value=st.session_state.get("team_name",""))
 
-    gid = st.text_input("Game Code", key="team_gid_input", value=st.session_state["team_game"])
-    tname = st.text_input("Team Name", key="team_name_input", value=st.session_state["team_name"])
+    cols = st.columns([1,1,3])
+    with cols[0]:
+        join_clicked = st.button("Join / Load Team", type="primary")
+    with cols[1]:
+        # Shareable link for students to jump straight to this team console
+        if gid and tname:
+            st.link_button("Copy Team Link", url=f"?view=team&gid={gid}&team={tname}")
 
-    if st.button("Join / Load Team", type="primary"):
+    if join_clicked:
         if gid not in store["games"]:
             st.error("Game not found. Check the code with your instructor.")
         elif not tname:
@@ -358,6 +391,8 @@ elif mode == "Team Console":
                     gs.teams[tname] = TeamState(name=tname)
                 st.session_state["team_game"] = gid
                 st.session_state["team_name"] = tname
+            # Keep URL in sync (prevents mobile bounce on reload)
+            _set_query(view="team", gid=gid, team=tname)
             st.success(f"Welcome, {tname}! You are in game {gid}.")
 
     gid_ss = st.session_state.get("team_game")
@@ -367,11 +402,9 @@ elif mode == "Team Console":
         gs: GameState = store["games"][gid_ss]
         team: TeamState = gs.teams[tname_ss]
 
-        # Gentle heartbeat to notice events fast (won't lose form state)
+        # Gentle heartbeat (Streamlit-side only; no meta refresh)
         if st_autorefresh:
             st_autorefresh(interval=1500, key=f"hb_team_{gid_ss}_{tname_ss}")
-        else:
-            st.markdown("<meta http-equiv='refresh' content='1.5'/>", unsafe_allow_html=True)
 
         # One-shot auto-refresh when instructor opens/closes a round
         last_seen_key = f"last_event_{gid_ss}"
@@ -382,8 +415,6 @@ elif mode == "Team Console":
             st.session_state[last_seen_key] = current_event
             if st_autorefresh:
                 st_autorefresh(interval=500, limit=1, key=f"oneshot_{gid_ss}_{tname_ss}_{current_event}")
-            else:
-                st.markdown("<meta http-equiv='refresh' content='0.5'/>", unsafe_allow_html=True)
 
         st.markdown(f"### Game **{gid_ss}** – Team **{tname_ss}**")
         gs.ensure_rounds()
@@ -415,7 +446,6 @@ elif mode == "Team Console":
                 dec = team.decisions.get(r)
                 submitted_this_round = bool(dec and dec.submitted)
 
-                # Hazards hidden while OPEN
                 show_h1 = haz1 if (not open_now) else "Hidden"
                 show_h2 = haz2 if (not open_now) else "Hidden"
                 st.write(f"**Hazards:** {show_h1} & {show_h2} | **Status:** {'OPEN' if open_now else 'Closed'}")
@@ -437,7 +467,6 @@ elif mode == "Team Console":
                         c4.metric("Spend", int(comp_vals.get("RoundSpend", 0)))
                         c5.metric("Budget After", int(comp_vals.get("BudgetAfter", 0)))
 
-                # Decision UI
                 if submitted_this_round:
                     if open_now:
                         st.info("Decision submitted. Waiting for instructor to close this round; results hidden for fairness.")
@@ -507,18 +536,13 @@ elif mode == "Team Console":
                                         st.rerun()
 
 # ---------- LEADERBOARD VIEW ----------
-else:
+elif mode == VIEWS["leader"]:
     st.subheader("Leaderboard / Projector")
-    if "current_game" not in st.session_state:
-        st.session_state["current_game"] = ""
     gid = st.text_input("Game Code", value=st.session_state.get("current_game", ""), key="leader_gid_input")
 
     if gid and gid in store["games"]:
-        # Gentle heartbeat
         if st_autorefresh:
             st_autorefresh(interval=1500, key=f"hb_leader_{gid}")
-        else:
-            st.markdown("<meta http-equiv='refresh' content='1.5'/>", unsafe_allow_html=True)
 
         # One-shot on events
         last_seen_key = f"last_event_{gid}"
@@ -529,8 +553,6 @@ else:
             st.session_state[last_seen_key] = current_event
             if st_autorefresh:
                 st_autorefresh(interval=500, limit=1, key=f"leader_oneshot_{gid}_{current_event}")
-            else:
-                st.markdown("<meta http-equiv='refresh' content='0.5'/>", unsafe_allow_html=True)
 
         gs: GameState = store["games"][gid]
         gs.ensure_rounds()
