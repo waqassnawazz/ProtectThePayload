@@ -9,9 +9,10 @@
 # • Components are consumable when they actually protect; unused ones carry over.
 # • Budget enforced; max TWO new purchases per round.
 # • Decision time recorded; tiebreakers: Payload ↓, Budget ↓, Time ↑.
-# • Defaults: 5 rounds, Starting Payload = 20, Starting Budget = 150.
-# • NEW: Instructor view is locked behind a global PIN (1557) before it’s visible.
-# • NEW: Team Console auto-refreshes gently while any round is OPEN.
+# • Defaults: 5 rounds, Starting Payload = 20, Starting Budget = 250.
+# • Instructor view is locked behind a global PIN (1557) before it’s visible.
+# • Team Console now auto-refreshes ONCE immediately when instructor opens/closes a round.
+# • Leaderboard now auto-refreshes ONCE immediately when instructor opens/closes a round.
 
 from __future__ import annotations
 import streamlit as st
@@ -59,7 +60,8 @@ COSTS = {name: cost for name, cost, _ in COMPONENTS}
 # ---------- Shared store ----------
 @st.cache_resource(show_spinner=False)
 def get_store():
-    return {"games": {}, "lock": threading.Lock()}
+    # NEW: "events" is a per-game counter bumped on open/close so clients can do a one-shot refresh.
+    return {"games": {}, "lock": threading.Lock(), "events": {}}
 
 # ---------- Data Models ----------
 @dataclass
@@ -338,8 +340,15 @@ if mode == "Instructor":
                         prev_open = gs.round_open.get(r, False)
                         gs.hazards[r] = (h1, h2)
                         gs.round_open[r] = open_flag
+
+                        # Track transitions to OPEN/CLOSE and bump the game event counter.
                         if open_flag and not prev_open:
                             gs.round_open_ts[r] = time.time()
+                            store["events"][gid] = store["events"].get(gid, 0) + 1  # OPEN → trigger one-shot refresh
+                        elif (not open_flag) and prev_open:
+                            # Round just closed → trigger one-shot refresh (for leaderboard/results reveal)
+                            store["events"][gid] = store["events"].get(gid, 0) + 1
+
                     st.toast(f"Round {r} saved.")
             with haz_col[4]:
                 total = len(gs.teams)
@@ -362,6 +371,8 @@ if mode == "Instructor":
             with store["lock"]:
                 store["games"][gid] = GameState(game_id=gs.game_id, admin_pin=gs.admin_pin)
                 store["games"][gid].ensure_rounds()
+                # Reset the event counter too so stale refreshes don't fire
+                store["events"][gid] = 0
             st.warning("Game reset. Share the same code/PIN.")
     else:
         st.info("Create or load a game to configure settings & hazards.")
@@ -392,6 +403,19 @@ elif mode == "Team Console":
         gs: GameState = store["games"][gid_ss]
         team: TeamState = gs.teams[tname_ss]
 
+        # NEW: One-shot auto-refresh when instructor opens/closes a round (event bump)
+        last_seen_key = f"last_event_{gid_ss}"
+        current_event = store.get("events", {}).get(gid_ss, 0)
+        if last_seen_key not in st.session_state:
+            st.session_state[last_seen_key] = 0
+        if current_event > st.session_state[last_seen_key]:
+            # Mark as seen first, then trigger a single refresh
+            st.session_state[last_seen_key] = current_event
+            if st_autorefresh:
+                st_autorefresh(interval=500, limit=1, key=f"oneshot_{gid_ss}_{tname_ss}_{current_event}")
+            else:
+                st.markdown("<meta http-equiv='refresh' content='0.5'/>", unsafe_allow_html=True)
+
         st.markdown(f"### Game **{gid_ss}** – Team **{tname_ss}**")
         gs.ensure_rounds()
         progress = compute_team_progress(gs, team)
@@ -399,13 +423,6 @@ elif mode == "Team Console":
         # Header metrics: hide results while any round is OPEN (show pre-round totals).
         rmax = gs.max_round()
         open_rounds = [r for r in range(1, rmax+1) if gs.round_open.get(r, False)]
-
-        # AUTO-REFRESH while any round is OPEN so phones catch changes quickly
-        if open_rounds:
-            if st_autorefresh:
-                st_autorefresh(interval=2000, key=f"auto_{gid_ss}_{tname_ss}")
-            else:
-                st.markdown("<meta http-equiv='refresh' content='2'/>", unsafe_allow_html=True)
 
         if open_rounds:
             r0 = min(open_rounds)
@@ -474,10 +491,6 @@ elif mode == "Team Console":
 
                 else:
                     # Round is OPEN and not submitted → show ONLY per-round payload/budget inside decision panel
-                    # Keep this round snappy too (per-panel auto-refresh)
-                    if st_autorefresh:
-                        st_autorefresh(interval=1000, key=f"tick_{gid_ss}_{tname_ss}_{r}")
-
                     round_prev_payload = int(progress.get(r, {}).get("PrevPayload", gs.config["starting_payload"]))
                     round_prev_budget  = int(progress.get(r, {}).get("PrevBudget",  gs.config["starting_budget"]))
                     m1, m2 = st.columns(2)
@@ -537,7 +550,20 @@ elif mode == "Team Console":
 else:
     st.subheader("Leaderboard / Projector")
     gid = st.text_input("Game Code", value=st.session_state.get("current_game", ""))
+
     if gid and gid in store["games"]:
+        # NEW: One-shot auto-refresh when instructor opens/closes a round (event bump)
+        last_seen_key = f"last_event_{gid}"
+        current_event = store.get("events", {}).get(gid, 0)
+        if last_seen_key not in st.session_state:
+            st.session_state[last_seen_key] = 0
+        if current_event > st.session_state[last_seen_key]:
+            st.session_state[last_seen_key] = current_event
+            if st_autorefresh:
+                st_autorefresh(interval=500, limit=1, key=f"leader_oneshot_{gid}_{current_event}")
+            else:
+                st.markdown("<meta http-equiv='refresh' content='0.5'/>", unsafe_allow_html=True)
+
         gs: GameState = store["games"][gid]
         gs.ensure_rounds()
 
@@ -608,6 +634,6 @@ else:
                 hz[f"Round {r}"] = f"{h1 or '—'} + {h2 or '—'}"
         st.dataframe(hz, use_container_width=True)
 
-        st.caption("Tip: Keep this page open on a projector. It updates live as rounds close.")
+        st.caption("Tip: Keep this page open on a projector. It updates instantly after rounds close.")
     else:
         st.info("Enter a valid game code to view the live leaderboard.")
