@@ -516,11 +516,28 @@ elif mode == "Team Console":
 # ---------- LEADERBOARD VIEW ----------
 else:
     st.subheader("Leaderboard / Projector")
-    refresh_button("🔄 Refresh leaderboard")
 
-    # Normalize the code entered here; default still uses current_game if present
-    gid_input = st.text_input("Game Code", value=st.session_state.get("current_game", ""))
-    gid = (gid_input or "").strip().upper()
+    # Ensure we have a persistent, normalized code holder
+    if "leaderboard_game" not in st.session_state:
+        st.session_state["leaderboard_game"] = (st.session_state.get("current_game", "") or "").strip().upper()
+
+    def _normalize_lb_gid():
+        st.session_state["leaderboard_game"] = (st.session_state.get("lb_gid", "") or "").strip().upper()
+
+    # Text input with on_change → saves normalized code in session_state
+    st.text_input(
+        "Game Code",
+        value=st.session_state.get("leaderboard_game", ""),
+        key="lb_gid",
+        on_change=_normalize_lb_gid,
+        help="Paste or type once. It will be remembered."
+    )
+
+    # Manual refresh AFTER the input so the rerun uses the latest stored code
+    if st.button("🔄 Refresh leaderboard"):
+        st.rerun()
+
+    gid = st.session_state.get("leaderboard_game", "").strip().upper()
 
     if gid and gid in store["games"]:
         gs: GameState = store["games"][gid]
@@ -529,7 +546,6 @@ else:
         closed_round = latest_closed_round(gs)
         all_closed = (closed_round == gs.max_round()) if closed_round is not None else False
 
-        # Build standings using the LATEST CLOSED ROUND (no leaks while open)
         rows = []
         if closed_round is not None:
             for tname, team in gs.teams.items():
@@ -544,7 +560,6 @@ else:
                 rows.append((tname, payload, budget, total_time))
             rows.sort(key=lambda x: (-x[1], -x[2], x[3]))
 
-        # Banner
         if closed_round is None:
             st.info("Waiting for Round 1 to finish…")
         elif rows:
@@ -555,7 +570,6 @@ else:
                 st.info(f"Current leader (after Round {closed_round}): {rows[0][0]} "
                         f"(Payload {rows[0][1]}, Budget {rows[0][2]}, Time {int(rows[0][3])}s)")
 
-        # Top 3
         st.markdown("### Top 3 Teams")
         if closed_round is None:
             st.info("Waiting for Round 1 to finish…")
@@ -569,7 +583,6 @@ else:
                 "Time (s)":[int(r[3]) for r in top3],
             }, use_container_width=True)
 
-        # Full standings
         st.markdown("### Full Standings")
         if closed_round is None:
             st.info("Waiting for Round 1 to finish…")
@@ -582,7 +595,6 @@ else:
                 "Time (s)":[int(r[3]) for r in rows],
             }, use_container_width=True)
 
-        # Hazards schedule
         st.markdown("### Hazards Schedule")
         hz = {}
         for r in range(1, gs.max_round()+1):
@@ -593,6 +605,6 @@ else:
                 hz[f"Round {r}"] = f"{h1 or '—'} + {h2 or '—'}"
         st.dataframe(hz, use_container_width=True)
 
-        st.caption("Tip: Keep this page open on a projector. Tap Refresh after a round closes.")
+        st.caption("Tip: Type the code once; just tap Refresh after each round closes.")
     else:
         st.info("Enter a valid game code to view the live leaderboard.")
