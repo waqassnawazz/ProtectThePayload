@@ -218,6 +218,12 @@ def prev_budget_and_inventory(gs: GameState, team: TeamState, round_index: int) 
     inv    = prev.get("InventoryAfter", {k:0 for k in COMP_KEYS})
     return budget, {k:int(inv.get(k,0)) for k in COMP_KEYS}
 
+# ---------- Manual Refresh Button ----------
+def refresh_button(label="🔄 Refresh"):
+    """Adds a manual refresh button that reruns the app."""
+    if st.button(label):
+        st.rerun()
+
 # ---------- Guides ----------
 def render_guides():
     st.caption("Component guide (cost → protection)")
@@ -386,6 +392,10 @@ elif mode == "Team Console":
         team: TeamState = gs.teams[tname_ss]
 
         st.markdown(f"### Game **{gid_ss}** – Team **{tname_ss}**")
+
+        # 🔄 Manual refresh for students
+        refresh_button("🔄 Refresh to get latest round status")
+
         gs.ensure_rounds()
         progress = compute_team_progress(gs, team)
 
@@ -517,6 +527,10 @@ elif mode == "Team Console":
 # ---------- LEADERBOARD VIEW ----------
 else:
     st.subheader("Leaderboard / Projector")
+
+    # 🔄 Manual refresh for leaderboard viewers
+    refresh_button("🔄 Refresh leaderboard")
+
     gid = st.text_input("Game Code", value=st.session_state.get("current_game", ""))
     if gid and gid in store["games"]:
         gs: GameState = store["games"][gid]
