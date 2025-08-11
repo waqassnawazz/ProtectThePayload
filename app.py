@@ -11,6 +11,7 @@
 # • Decision time recorded; tiebreakers: Payload ↓, Budget ↓, Time ↑.
 # • Defaults: 5 rounds, Starting Payload = 20, Starting Budget = 150.
 # • NEW: Instructor view is locked behind a global PIN (1557) before it’s visible.
+# • NEW: Team Console auto-refreshes gently while any round is OPEN.
 
 from __future__ import annotations
 import streamlit as st
@@ -19,6 +20,12 @@ from typing import Dict, Optional, Tuple, List
 import time, random, string
 import threading
 import copy
+
+# --- Optional autorefresh helper (works if available; else fallback to meta refresh)
+try:
+    from streamlit import st_autorefresh
+except Exception:  # older/newer Streamlit without st_autorefresh
+    st_autorefresh = None
 
 # ---------- Security ----------
 INSTRUCTOR_PIN = "1557"  # gate to even SEE the Instructor UI
@@ -42,7 +49,7 @@ HAZARDS = {
 
 DEFAULT_CONFIG = {
     "rounds": 5,
-    "starting_budget": 150,
+    "starting_budget": 250,
     "starting_payload": 20,
 }
 
@@ -392,6 +399,14 @@ elif mode == "Team Console":
         # Header metrics: hide results while any round is OPEN (show pre-round totals).
         rmax = gs.max_round()
         open_rounds = [r for r in range(1, rmax+1) if gs.round_open.get(r, False)]
+
+        # AUTO-REFRESH while any round is OPEN so phones catch changes quickly
+        if open_rounds:
+            if st_autorefresh:
+                st_autorefresh(interval=2000, key=f"auto_{gid_ss}_{tname_ss}")
+            else:
+                st.markdown("<meta http-equiv='refresh' content='2'/>", unsafe_allow_html=True)
+
         if open_rounds:
             r0 = min(open_rounds)
             pv = progress.get(r0, {}).get("PrevPayload", gs.config["starting_payload"])
@@ -459,6 +474,10 @@ elif mode == "Team Console":
 
                 else:
                     # Round is OPEN and not submitted → show ONLY per-round payload/budget inside decision panel
+                    # Keep this round snappy too (per-panel auto-refresh)
+                    if st_autorefresh:
+                        st_autorefresh(interval=1000, key=f"tick_{gid_ss}_{tname_ss}_{r}")
+
                     round_prev_payload = int(progress.get(r, {}).get("PrevPayload", gs.config["starting_payload"]))
                     round_prev_budget  = int(progress.get(r, {}).get("PrevBudget",  gs.config["starting_budget"]))
                     m1, m2 = st.columns(2)
