@@ -27,15 +27,15 @@ INSTRUCTOR_PIN = "1557"
 
 # ---------- Constants ----------
 COMPONENTS = [
-    ("Light Shield", 10, {"Debris"}),
+    ("Light Shield", 20, {"Debris"}),
     ("Heavy Shield", 30, {"Debris", "Heat Wave"}),
     ("Parachute", 20, {"Turbulence"}),
-    ("Guidance System", 20, set()),      # dodge one hazard by exact name
+    ("Guidance System", 10, set()),      # dodge one hazard by exact name
     ("Reinforced Frame", 20, {"High Wind"}),
     ("Foam Liner", 10, set()),           # -1 total loss if there was any loss
 ]
 HAZARDS = {"High Wind": 3, "Debris": 3, "Heat Wave": 2, "Turbulence": 2}
-DEFAULT_CONFIG = {"rounds": 5, "starting_budget": 150, "starting_payload": 20}
+DEFAULT_CONFIG = {"rounds": 5, "starting_budget": 200, "starting_payload": 30}
 COMP_KEYS = [c[0] for c in COMPONENTS]
 COSTS = {name: cost for name, cost, _ in COMPONENTS}
 
