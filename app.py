@@ -222,12 +222,12 @@ def render_guides():
     # Then show component guide
     st.caption("Component guide (cost → protection)")
     st.markdown("\n".join([
-        f"- Light Shield (${COSTS['Light Shield']}) – protects Debris",
-        f"- Heavy Shield (${COSTS['Heavy Shield']}) – protects Debris OR Heat Wave",
-        f"- Parachute (${COSTS['Parachute']}) – protects Turbulence (no help in High Wind)",
-        f"- Guidance System (${COSTS['Guidance System']}) – dodge exactly one hazard per round (type its name)",
-        f"- Reinforced Frame (${COSTS['Reinforced Frame']}) – protects High Wind",
-        f"- Foam Liner (${COSTS['Foam Liner']}) – reduce total round loss by 1 (min 0)",
+        f"- Light Shield (${COSTS['Light Shield']}M) – protects Debris",
+        f"- Heavy Shield (${COSTS['Heavy Shield']}M) – protects Debris OR Heat Wave",
+        f"- Parachute (${COSTS['Parachute']}M) – protects Turbulence (no help in High Wind)",
+        f"- Guidance System (${COSTS['Guidance System']}M) – dodge exactly one hazard per round (type its name)",
+        f"- Reinforced Frame (${COSTS['Reinforced Frame']}M) – protects High Wind",
+        f"- Foam Liner (${COSTS['Foam Liner']}M) – reduce total round loss by 1 (min 0)",
     ]))
 
 # ---------- App UI ----------
@@ -401,8 +401,8 @@ elif mode == "Team Console":
             display_budget  = int(progress.get(last, {}).get("BudgetAfter", gs.config["starting_budget"]))
 
         sc1, sc2 = st.columns(2)
-        with sc1: st.metric("Payload (points)", value=display_payload)
-        with sc2: st.metric("Budget ($)", value=display_budget)
+        with sc1: st.metric("Payload (items)", value=display_payload)
+        with sc2: st.metric("Budget ($M)", value=display_budget)
 
         st.divider()
         st.markdown("#### Rounds")
