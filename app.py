@@ -27,14 +27,14 @@ INSTRUCTOR_PIN = "1557"
 
 # ---------- Constants ----------
 COMPONENTS = [
-    ("Light Shield", 10, {"Rocky Terrain"}),
-    ("Heavy Shield", 30, {"Rocky Terrain", "Heat Wave"}),
+    ("Light Shield", 10, {"Debris"}),
+    ("Heavy Shield", 30, {"Debris", "Heat Wave"}),
     ("Parachute", 20, {"Turbulence"}),
     ("Guidance System", 20, set()),      # dodge one hazard by exact name
     ("Reinforced Frame", 20, {"High Wind"}),
     ("Foam Liner", 10, set()),           # -1 total loss if there was any loss
 ]
-HAZARDS = {"High Wind": 3, "Rocky Terrain": 3, "Heat Wave": 2, "Turbulence": 2}
+HAZARDS = {"High Wind": 3, "Debris": 3, "Heat Wave": 2, "Turbulence": 2}
 DEFAULT_CONFIG = {"rounds": 5, "starting_budget": 150, "starting_payload": 20}
 COMP_KEYS = [c[0] for c in COMPONENTS]
 COSTS = {name: cost for name, cost, _ in COMPONENTS}
@@ -146,7 +146,7 @@ def compute_team_progress(gs: GameState, team: TeamState) -> Dict[int, Dict[str,
                     used["Guidance System"] = 1
                     return 0.0
                 # Protections (consumed if used)
-                if hname == "Rocky Terrain":
+                if hname == "Debris":
                     if current_inv.get("Light Shield", 0) == 1 and used["Light Shield"] == 0:
                         used["Light Shield"] = 1; return 0.0
                     if current_inv.get("Heavy Shield", 0) == 1 and used["Heavy Shield"] == 0:
@@ -216,8 +216,8 @@ def refresh_button(label="🔄 Refresh"):
 def render_guides():
     st.caption("Component guide (cost → protection)")
     st.markdown("\n".join([
-        f"- Light Shield (${COSTS['Light Shield']}) – protects Rocky Terrain",
-        f"- Heavy Shield (${COSTS['Heavy Shield']}) – protects Rocky Terrain OR Heat Wave",
+        f"- Light Shield (${COSTS['Light Shield']}) – protects Debris",
+        f"- Heavy Shield (${COSTS['Heavy Shield']}) – protects Debris OR Heat Wave",
         f"- Parachute (${COSTS['Parachute']}) – protects Turbulence (no help in High Wind)",
         f"- Guidance System (${COSTS['Guidance System']}) – dodge exactly one hazard per round (type its name)",
         f"- Reinforced Frame (${COSTS['Reinforced Frame']}) – protects High Wind",
