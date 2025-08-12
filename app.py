@@ -214,6 +214,12 @@ def refresh_button(label="🔄 Refresh"):
 
 # ---------- Guides ----------
 def render_guides():
+
+    # Show damage guide first
+    st.caption("Damage guide (hazard → payload loss)")
+    st.markdown("\n".join([f"- {name} – reduces payload by {HAZARDS[name]}" for name in HAZARDS]))
+
+    # Then show component guide
     st.caption("Component guide (cost → protection)")
     st.markdown("\n".join([
         f"- Light Shield (${COSTS['Light Shield']}) – protects Debris",
@@ -223,8 +229,6 @@ def render_guides():
         f"- Reinforced Frame (${COSTS['Reinforced Frame']}) – protects High Wind",
         f"- Foam Liner (${COSTS['Foam Liner']}) – reduce total round loss by 1 (min 0)",
     ]))
-    st.caption("Damage guide (hazard → payload loss)")
-    st.markdown("\n".join([f"- {name} – reduces payload by {HAZARDS[name]}" for name in HAZARDS]))
 
 # ---------- App UI ----------
 st.set_page_config(page_title="Protect the Payload – Strategy Game", page_icon="🛡️", layout="wide")
